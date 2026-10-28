@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Aloha VPN 节点池 · 逆向 Demo</title>
+<style>
+  :root{--bg:#0e1116;--card:#161b22;--line:#30363d;--fg:#e6edf3;--dim:#8b949e;--ok:#3fb950;--bad:#f85149;--warn:#d29922;--acc:#58a6ff}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.55 -apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Microsoft YaHei",sans-serif}
+  header{padding:18px 22px;border-bottom:1px solid var(--line);display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+  h1{font-size:17px;margin:0;font-weight:600}
+  .tag{font-size:12px;padding:2px 8px;border:1px solid var(--line);border-radius:999px;color:var(--dim)}
+  .wrap{padding:16px 22px 40px}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .card b{display:block;font-size:22px;font-weight:650;margin-top:2px}
+  .card span{color:var(--dim);font-size:12px}
+  .banner{background:#1f1607;border:1px solid #5c4213;color:#e3b341;border-radius:10px;padding:11px 14px;margin-bottom:16px;font-size:13px}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+  input,select,button{background:#0d1117;color:var(--fg);border:1px solid var(--line);border-radius:7px;padding:7px 10px;font-size:13px}
+  button{cursor:pointer}
+  button:hover{border-color:var(--acc)}
+  table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  th,td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--line);font-size:13px;white-space:nowrap}
+  th{background:#1b2129;color:var(--dim);font-weight:600;position:sticky;top:0}
+  tr:hover td{background:#1b2129}
+  .ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}
+  code{background:#0d1117;border:1px solid var(--line);border-radius:5px;padding:1px 5px;font-size:12px}
+  .foot{margin-top:14px;color:var(--dim);font-size:12px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Aloha VPN 2.8.0 · 节点池逆向 Demo</h1>
+  <span class="tag">com.alohamobile.vpn</span>
+  <span class="tag">vpndb.alhapi.com/v1/vpnlist</span>
+  <span class="tag" id="ts">—</span>
+</header>
+<div class="wrap">
+  <div class="banner" id="banner">
+    ⚠️ 本页展示的是 <b>TCP/TLS 层真实可达性</b>。<code>VLESS-REALITY</code> 的 UUID 与
+    <code>Shadowsocks</code> 的密码在该 APK 内由 DexProtector 保护，静态不可得 —— 端口通 ≠ 能代理。
+  </div>
+
+  <div class="cards" id="cards"></div>
+
+  <div class="bar">
+    <input id="q" placeholder="搜索 IP / 国家 / ISP" style="min-width:230px">
+    <select id="proto">
+      <option value="">全部协议</option>
+      <option value="vless">vless</option>
+      <option value="shadowsocks">shadowsocks</option>
+    </select>
+    <select id="alive">
+      <option value="1">只看端口开放</option>
+      <option value="">全部</option>
+    </select>
+    <button id="refresh">实时刷新节点表</button>
+    <span id="stat" class="tag"></span>
+  </div>
+
+  <table>
+    <thead><tr>
+      <th>#</th><th>IP</th><th>端口</th><th>协议</th><th>地区标签</th><th>实际国家</th>
+      <th>API</th><th>TCP</th><th>RTT</th><th>TLS</th><th>ISP / AS</th>
+    </tr></thead>
+    <tbody id="tb"></tbody>
+  </table>
+  <div class="foot">数据来源：<code>GET https://vpndb.alhapi.com/v1/vpnlist?platform=android</code>（无鉴权）· 压测由 <code>stress_aloha.py</code> 生成</div>
+</div>
+
+<script>
+let POOL = {nodes:[],options:{}}, SUM = {};
+const $ = s => document.querySelector(s);
+
+function card(label, val, cls){
+  return `<div class="card"><span>${label}</span><b class="${cls||''}">${val}</b></div>`;
+}
+function renderCards(){
+  const n = POOL.nodes.length;
+  const tcp = POOL.nodes.filter(x=>x.tcp_open).length;
+  const tls = POOL.nodes.filter(x=>x.tls_ok).length;
+  const ips = new Set(POOL.nodes.filter(x=>x.tcp_open).map(x=>x.address)).size;
+  const p50 = (()=>{const a=POOL.nodes.filter(x=>x.tcp_ms).map(x=>x.tcp_ms).sort((a,b)=>a-b);
+    return a.length? Math.round(a[Math.floor(a.length/2)]) : '—';})();
+  $('#cards').innerHTML =
+    card('端点总数', n) + card('端口开放', tcp, 'ok') + card('TLS 握手成功', tls, 'ok') +
+    card('至少一个端口开放的 IP', ips, 'ok') + card('RTT 中位数 (ms)', p50, 'warn');
+  $('#stat').textContent = `显示 ${n} 条`;
+}
+function renderTable(){
+  const q = $('#q').value.trim().toLowerCase();
+  const pr = $('#proto').value;
+  const onlyAlive = $('#alive').value === '1';
+  let rows = POOL.nodes.filter(x=>{
+    if(onlyAlive && !x.tcp_open) return false;
+    if(pr && x.protocol !== pr) return false;
+    if(q){
+      const hay = [x.address,x.country,x.cc,x.isp,x.location,x.as].join(' ').toLowerCase();
+      if(!hay.includes(q)) return false;
+    }
+    return true;
+  });
+  rows.sort((a,b)=> (b.tcp_open?1:0)-(a.tcp_open?1:0) || (a.tcp_ms||9e9)-(b.tcp_ms||9e9));
+  $('#tb').innerHTML = rows.map((x,i)=>`<tr>
+    <td>${i+1}</td>
+    <td><code>${x.address}</code></td>
+    <td>${x.port||'-'}</td>
+    <td>${x.protocol}</td>
+    <td>${x.location||'-'}</td>
+    <td>${x.country||'-'} ${x.cc?`(${x.cc})`:''}</td>
+    <td>${x.priority??'-'}</td>
+    <td class="${x.tcp_open?'ok':'bad'}">${x.tcp_open?'open':'closed'}</td>
+    <td>${x.tcp_ms!=null?x.tcp_ms:'-'}</td>
+    <td class="${x.tls_ok?'ok':'bad'}">${x.tls_ok?(x.tls_ver||'ok'):'-'}</td>
+    <td>${x.isp||'-'}</td>
+  </tr>`).join('');
+  $('#stat').textContent = `显示 ${rows.length} / ${POOL.nodes.length}`;
+}
+async function boot(){
+  SUM = await (await fetch('/api/summary')).json();
+  POOL = await (await fetch('/api/pool')).json();
+  $('#ts').textContent = POOL.refreshed_at || (SUM.probed_at||'');
+  renderCards(); renderTable();
+}
+$('#q').oninput = renderTable;
+$('#proto').onchange = renderTable;
+$('#alive').onchange = renderTable;
+$('#refresh').onclick = async ()=>{
+  $('#refresh').disabled = true; $('#refresh').textContent = '拉取中…';
+  try{
+    const r = await (await fetch('/api/refresh')).json();
+    alert(r.ok ? `实时拉取成功：${r.endpoints} 个端点\nREALITY 公钥: ${r.options?.vless?.public_key}` : '失败: '+r.error);
+  }catch(e){ alert('失败: '+e); }
+  $('#refresh').disabled = false; $('#refresh').textContent = '实时刷新节点表';
+};
+boot();
+</script>
+</body>
+</html>

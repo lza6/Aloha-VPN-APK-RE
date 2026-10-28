@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+memscan/
+dexdump/
+apk_raw/
+jadx_out/
+apktool_out/
+aloha_vpnlist_raw.json
+aloha_ips.txt
+stress_result.json
+artifacts/
